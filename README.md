@@ -80,19 +80,22 @@ of repeated runs and exclude process startup and compilation.
 
 | case | mojo-surprise | scikit-surprise | result |
 | --- | ---: | ---: | ---: |
-| SVD.fit (19.2k ratings, 40 factors, 8 epochs) | 9.9 ms | 30.5 ms | 3.07x faster |
-| SVD++.fit (8k ratings, 20 factors, 3 epochs) | 16.4 ms | 34.0 ms | 2.07x faster |
-| KNNBasic.fit similarity (800 users, 19.2k ratings) | 8.7 ms | 42.0 ms | 4.84x faster |
-| KNNBasic.test (10k predictions, k=40) | 538.2 ms | 370.6 ms | 1.45x slower |
+| SVD.fit (19.2k ratings, 40 factors, 8 epochs) | 8.4 ms | 30.8 ms | 3.66x faster |
+| SVD++.fit (8k ratings, 20 factors, 3 epochs) | 16.0 ms | 30.5 ms | 1.91x faster |
+| KNNBasic.fit similarity (800 users, 19.2k ratings) | 10.5 ms | 23.5 ms | 2.24x faster |
+| KNNBasic.test (10k predictions, k=40) | 23.5 ms | 269.7 ms | 11.45x faster |
 
-Machine: Intel Xeon E5-2697 v4 at 2.30 GHz,
+Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz,
 Linux 6.8.0-136-generic x86-64, glibc 2.39, Python 3.13.14.
 
 SVD and SVD++ use explicit float64 SIMD for factor dot products and updates,
-with scalar remainder loops. Similarity construction intersects sorted rating
-lists and parallelizes sufficiently large sets of independent entity rows.
-Immutable contiguous rating and CSR buffers are cached on the trainset and
-passed to Mojo without FFI copies.
+with scalar remainder loops. KNN test batches cross the FFI once, reuse one
+scratch allocation for neighbor indices and values, and use SIMD for the
+weighted reduction with a scalar tail. Independent prediction rows parallelize
+at 2,048 queries; smaller batches remain serial. Similarity construction
+intersects sorted rating lists and parallelizes sufficiently large sets of
+independent entity rows. Immutable contiguous rating and CSR buffers are cached
+on the trainset and passed to Mojo without FFI copies.
 
 No GPU path is included. The factor trainers are sequential SGD with less than
 two floating-point operations per byte moved, while similarity construction

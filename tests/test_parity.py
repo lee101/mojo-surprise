@@ -238,6 +238,82 @@ def test_knn_predictions_match_upstream(
         assert np.array_equal(model.bi, upstream[key + "_bi"])
 
 
+@pytest.mark.parametrize(
+    "algorithm", [KNNBasic, KNNWithMeans, KNNWithZScore, KNNBaseline]
+)
+def test_knn_batch_matches_single_with_simd_tail_and_unknowns(
+    trainset, algorithm
+):
+    model = algorithm(k=7, sim_options={"name": "msd"}, verbose=False).fit(
+        trainset
+    )
+    queries = [
+        ("u1", "i3", 2.0),
+        ("u4", "i1", 4.0),
+        ("new", "i2", 3.0),
+        ("u2", "new", 3.0),
+        ("u5", "i2", 1.0),
+    ]
+    singles = [model.predict(user, item, rating) for user, item, rating in queries]
+    batch = model.test(iter(queries))
+    assert batch == singles
+
+
+def test_knn_simd_reduction_tail_matches_scalar_reference():
+    rows = []
+    for user in range(20):
+        rows.append((f"u{user}", "i0", 1.0 + user % 5))
+        rows.append((f"u{user}", "i1", 1.0 + (3 * user + 1) % 5))
+    trainset = Dataset.load_from_df(
+        pd.DataFrame(rows, columns=["user", "item", "rating"]),
+        Reader(rating_scale=(1, 5)),
+    ).build_full_trainset()
+    model = KNNBasic(k=17, sim_options={"name": "msd"}, verbose=False).fit(
+        trainset
+    )
+    x = trainset.to_inner_uid("u0")
+    y = trainset.to_inner_iid("i0")
+    candidates = sorted(
+        ((model.sim[x, neighbor], rating) for neighbor, rating in trainset.ir[y]),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )[:17]
+    positive = [(score, rating) for score, rating in candidates if score > 0]
+    expected = sum(score * rating for score, rating in positive) / sum(
+        score for score, _ in positive
+    )
+    prediction = model.predict("u0", "i0", clip=False)
+    assert prediction.est == pytest.approx(expected, rel=0, abs=2e-15)
+    assert prediction.details["actual_k"] == 17
+
+
+def test_knn_batch_below_parallel_threshold_stays_serial(trainset, monkeypatch):
+    import surprise._core as core
+
+    model = KNNBasic(k=3, sim_options={"name": "msd"}, verbose=False).fit(
+        trainset
+    )
+
+    def unexpected_parallel_initialization():
+        raise AssertionError("small prediction batch initialized parallel runtime")
+
+    monkeypatch.setattr(core, "parallel_available", unexpected_parallel_initialization)
+    model.test([("u1", "i3", 2.0)] * 2047)
+
+
+def test_knn_batch_parallel_threshold_matches_serial(trainset, monkeypatch):
+    import surprise._core as core
+
+    model = KNNBasic(k=3, sim_options={"name": "msd"}, verbose=False).fit(
+        trainset
+    )
+    query = ("u1", "i3", 2.0)
+    expected = model.predict(*query)
+    monkeypatch.setattr(core, "parallel_available", lambda: True)
+    predictions = model.test([query] * 2048)
+    assert predictions == [expected] * 2048
+
+
 def test_baseline_sgd_matches_upstream(trainset, upstream):
     model = KNNBaseline(
         k=3,

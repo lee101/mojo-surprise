@@ -23,7 +23,7 @@ _SIGNATURES = {
     "msu_similarities": ([I] * 9 + [F, F, I], None),
     "msu_baseline_als": ([I] * 11 + [F, F, F], None),
     "msu_baseline_sgd": ([I] * 7 + [F, F, F], None),
-    "msu_knn_predict": ([I] * 18 + [F], None),
+    "msu_knn_predict": ([I] * 19 + [F], None),
 }
 
 

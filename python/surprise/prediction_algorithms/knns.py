@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .._core import knn_one, trainset_csr
+from .._core import knn_many, knn_one, trainset_csr
 from .algo_base import AlgoBase
-from .predictions import PredictionImpossible
+from .predictions import Prediction, PredictionImpossible
 
 
 class SymmetricAlgo(AlgoBase):
@@ -46,8 +46,48 @@ class SymmetricAlgo(AlgoBase):
             else np.ascontiguousarray(y_bias, dtype=np.float64)
         )
 
+    def test(self, testset, verbose=False):
+        rows = list(testset)
+        count = len(rows)
+        if count == 0:
+            return []
+        users = self.trainset._raw2inner_id_users
+        items = self.trainset._raw2inner_id_items
+        inner_users = np.fromiter(
+            (users.get(uid, -1) for uid, _, _ in rows), dtype=np.int64, count=count
+        )
+        inner_items = np.fromiter(
+            (items.get(iid, -1) for _, iid, _ in rows), dtype=np.int64, count=count
+        )
+        xs, ys = self.switch(inner_users, inner_items)
+        estimates, actual = knn_many(self, xs, ys, self._knn_mode)
+        lower, upper = self.trainset.rating_scale
+        predictions = []
+        for row, (uid, iid, rating) in enumerate(rows):
+            known = inner_users[row] >= 0 and inner_items[row] >= 0
+            impossible = self._knn_mode != 3 and not known
+            reason = "User and/or item is unknown."
+            if self._knn_mode == 0 and known and actual[row] < self.min_k:
+                impossible = True
+                reason = "Not enough neighbors."
+            if impossible:
+                estimate = self.default_prediction()
+                details = {"was_impossible": True, "reason": reason}
+            else:
+                estimate = float(estimates[row])
+                details = {"was_impossible": False}
+                if known:
+                    details["actual_k"] = int(actual[row])
+            estimate = min(upper, max(lower, estimate))
+            prediction = Prediction(uid, iid, rating, estimate, details)
+            if verbose:
+                print(prediction)
+            predictions.append(prediction)
+        return predictions
+
 
 class KNNBasic(SymmetricAlgo):
+    _knn_mode = 0
     def __init__(self, k=40, min_k=1, sim_options={}, verbose=True, **kwargs):
         super().__init__(sim_options=sim_options, verbose=verbose, **kwargs)
         self.k = k
@@ -72,6 +112,7 @@ class KNNBasic(SymmetricAlgo):
 
 
 class KNNWithMeans(SymmetricAlgo):
+    _knn_mode = 1
     def __init__(self, k=40, min_k=1, sim_options={}, verbose=True, **kwargs):
         super().__init__(sim_options=sim_options, verbose=verbose, **kwargs)
         self.k = k
@@ -97,6 +138,7 @@ class KNNWithMeans(SymmetricAlgo):
 
 
 class KNNWithZScore(SymmetricAlgo):
+    _knn_mode = 2
     def __init__(self, k=40, min_k=1, sim_options={}, verbose=True, **kwargs):
         super().__init__(sim_options=sim_options, verbose=verbose, **kwargs)
         self.k = k
@@ -128,6 +170,7 @@ class KNNWithZScore(SymmetricAlgo):
 
 
 class KNNBaseline(SymmetricAlgo):
+    _knn_mode = 3
     def __init__(
         self,
         k=40,

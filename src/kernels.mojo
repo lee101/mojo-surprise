@@ -338,18 +338,32 @@ def knn_predict(
     actual: IPtr,
     scores_work: FPtr,
     neighbors_work: IPtr,
+    values_work: FPtr,
     m: Int,
     n_x: Int,
     k: Int,
     min_k: Int,
     mode: Int,
     global_mean: Float64,
+    allow_parallel: Bool,
 ):
-    for row in range(m):
+    comptime W = simdwidthof[DType.float64]()
+
+    @parameter
+    def compute_row(row: Int):
         var base = row * k
         var kept = 0
         var y = Int(ys[row])
         var x = Int(xs[row])
+        if x < 0 or y < 0:
+            actual[row] = -1
+            estimates[row] = global_mean
+            if mode == 3:
+                if x >= 0:
+                    estimates[row] += stat1[x]
+                if y >= 0:
+                    estimates[row] += y_bias[y]
+            return
         for pos in range(Int(offsets[y]), Int(offsets[y + 1])):
             var nb = Int(neighbors[pos])
             var score = sim[x * n_x + nb]
@@ -367,13 +381,11 @@ def knn_predict(
             neighbors_work[base + insert] = Int64(pos)
             if kept < k:
                 kept += 1
-        var weighted = 0.0
-        var sum_sim = 0.0
         var used = 0
         for rank in range(kept):
             var score = scores_work[base + rank]
             if score <= 0.0:
-                continue
+                break
             var pos = Int(neighbors_work[base + rank])
             var nb = Int(neighbors[pos])
             var value = ratings[pos]
@@ -383,9 +395,29 @@ def knn_predict(
                 value = (value - stat1[nb]) / stat2[nb]
             elif mode == 3:
                 value -= global_mean + stat1[nb] + y_bias[y]
-            weighted += score * value
-            sum_sim += score
+            values_work[base + rank] = value
             used += 1
+        var weighted = 0.0
+        var sum_sim = 0.0
+        var rank = 0
+        var row_values = values_work + base
+        var row_scores = scores_work + base
+        if used >= W:
+            var score_vector = row_scores.load[width=W](0)
+            var weighted_vector = score_vector * row_values.load[width=W](0)
+            var sum_vector = score_vector
+            rank = W
+            while rank + W <= used:
+                score_vector = row_scores.load[width=W](rank)
+                weighted_vector += score_vector * row_values.load[width=W](rank)
+                sum_vector += score_vector
+                rank += W
+            weighted = weighted_vector.reduce_add()
+            sum_sim = sum_vector.reduce_add()
+        while rank < used:
+            weighted += row_scores[rank] * row_values[rank]
+            sum_sim += row_scores[rank]
+            rank += 1
         actual[row] = Int64(used)
         if mode == 0:
             estimates[row] = global_mean
@@ -403,6 +435,12 @@ def knn_predict(
             estimates[row] = global_mean + stat1[x] + y_bias[y]
             if used >= min_k and sum_sim != 0.0:
                 estimates[row] += weighted / sum_sim
+
+    if allow_parallel and m >= 2048:
+        parallelize[compute_row](m, 64)
+    else:
+        for row in range(m):
+            compute_row(row)
 
 
 @export("msu_svd_train")
@@ -471,9 +509,10 @@ def msu_knn_predict(
     xs: Int, ys: Int, offsets: Int, neighbors: Int, ratings: Int, sim: Int,
     stat1: Int, stat2: Int, y_bias: Int, estimates: Int, actual: Int,
     scores_work: Int, neighbors_work: Int, m: Int, n_x: Int, k: Int,
-    min_k: Int, mode: Int, global_mean: Float64,
+    min_k: Int, mode: Int, allow_parallel: Int, global_mean: Float64,
 ) abi("C"):
     knn_predict(ip(xs), ip(ys), ip(offsets), ip(neighbors), fp(ratings),
                 fp(sim), fp(stat1), fp(stat2), fp(y_bias), fp(estimates),
-                ip(actual), fp(scores_work), ip(neighbors_work), m, n_x, k,
-                min_k, mode, global_mean)
+                ip(actual), fp(scores_work), ip(neighbors_work),
+                fp(neighbors_work), m, n_x, k,
+                min_k, mode, global_mean, allow_parallel != 0)

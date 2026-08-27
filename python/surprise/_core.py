@@ -128,18 +128,26 @@ def compute_baselines(trainset, options):
 
 
 def knn_one(algo, x: int, y: int, mode: int):
-    xs = i64([x])
-    ys = i64([y])
-    estimates = np.empty(1, dtype=np.float64)
-    actual = np.empty(1, dtype=np.int64)
-    score_work = np.empty(algo.k, dtype=np.float64)
-    neighbor_work = np.empty(algo.k, dtype=np.int64)
+    estimates, actual = knn_many(algo, i64([x]), i64([y]), mode)
+    return float(estimates[0]), int(actual[0])
+
+
+def knn_many(algo, xs: np.ndarray, ys: np.ndarray, mode: int):
+    xs = i64(xs)
+    ys = i64(ys)
+    if xs.shape != ys.shape or xs.ndim != 1:
+        raise ValueError("KNN query buffers must be one-dimensional and equal-sized")
+    count = xs.size
+    estimates = np.empty(count, dtype=np.float64)
+    actual = np.empty(count, dtype=np.int64)
+    score_work = np.empty(count * algo.k, dtype=np.float64)
+    neighbor_work = np.empty(count * algo.k, dtype=np.int64)
     stat1 = algo._stat1
     stat2 = algo._stat2
     y_bias = algo._y_bias
     lib().msu_knn_predict(
-        addr(xs, dtype=np.int64, min_size=1),
-        addr(ys, dtype=np.int64, min_size=1),
+        addr(xs, dtype=np.int64, min_size=count),
+        addr(ys, dtype=np.int64, min_size=count),
         addr(algo._yr_offsets, dtype=np.int64, min_size=algo.n_y + 1),
         addr(algo._yr_neighbors, dtype=np.int64, min_size=algo.trainset.n_ratings),
         addr(algo._yr_ratings, dtype=np.float64, min_size=algo.trainset.n_ratings),
@@ -147,15 +155,16 @@ def knn_one(algo, x: int, y: int, mode: int):
         addr(stat1, dtype=np.float64, min_size=algo.n_x),
         addr(stat2, dtype=np.float64, min_size=algo.n_x),
         addr(y_bias, dtype=np.float64, min_size=algo.n_y),
-        addr(estimates, dtype=np.float64, min_size=1, writable=True),
-        addr(actual, dtype=np.int64, min_size=1, writable=True),
-        addr(score_work, dtype=np.float64, min_size=algo.k, writable=True),
-        addr(neighbor_work, dtype=np.int64, min_size=algo.k, writable=True),
-        1,
+        addr(estimates, dtype=np.float64, min_size=count, writable=True),
+        addr(actual, dtype=np.int64, min_size=count, writable=True),
+        addr(score_work, dtype=np.float64, min_size=count * algo.k, writable=True),
+        addr(neighbor_work, dtype=np.int64, min_size=count * algo.k, writable=True),
+        count,
         algo.n_x,
         algo.k,
         algo.min_k,
         mode,
+        int(count >= 2048 and parallel_available()),
         algo.trainset.global_mean,
     )
-    return float(estimates[0]), int(actual[0])
+    return estimates, actual
