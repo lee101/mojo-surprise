@@ -1,4 +1,4 @@
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import sqrt
 from std.sys import simd_width_of as simdwidthof
 
