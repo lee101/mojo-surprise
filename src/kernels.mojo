@@ -1,4 +1,3 @@
-from max.algorithm import parallelize
 from std.math import sqrt
 from std.sys import simd_width_of as simdwidthof
 
@@ -19,10 +18,10 @@ def dot(a: FPtr, b: FPtr, n: Int) -> Float64:
     var total = 0.0
     var f = 0
     if n >= W:
-        var vector_total = a.load[width=W](0) * b.load[width=W](0)
+        var vector_total = a.unsafe_load[width=W](0) * b.unsafe_load[width=W](0)
         f = W
         while f + W <= n:
-            vector_total += a.load[width=W](f) * b.load[width=W](f)
+            vector_total += a.unsafe_load[width=W](f) * b.unsafe_load[width=W](f)
             f += W
         total = vector_total.reduce_add()
     while f < n:
@@ -36,13 +35,13 @@ def dot_plus(a: FPtr, b: FPtr, c: FPtr, n: Int) -> Float64:
     var total = 0.0
     var f = 0
     if n >= W:
-        var vector_total = a.load[width=W](0) * (
-            b.load[width=W](0) + c.load[width=W](0)
+        var vector_total = a.unsafe_load[width=W](0) * (
+            b.unsafe_load[width=W](0) + c.unsafe_load[width=W](0)
         )
         f = W
         while f + W <= n:
-            vector_total += a.load[width=W](f) * (
-                b.load[width=W](f) + c.load[width=W](f)
+            vector_total += a.unsafe_load[width=W](f) * (
+                b.unsafe_load[width=W](f) + c.unsafe_load[width=W](f)
             )
             f += W
         total = vector_total.reduce_add()
@@ -87,8 +86,8 @@ def svd_train(
                 bu[u] += lr_bu * (err - reg_bu * bu[u])
                 bi[i] += lr_bi * (err - reg_bi * bi[i])
             for f in range(0, vector_limit, W):
-                var pv = p.load[width=W](f)
-                var qv = q.load[width=W](f)
+                var pv = p.unsafe_load[width=W](f)
+                var qv = q.unsafe_load[width=W](f)
                 p.store(f, pv + lr_pu * (err * qv - reg_pu * pv))
                 q.store(f, qv + lr_qi * (err * pv - reg_qi * qv))
             for f in range(vector_limit, n_factors):
@@ -146,8 +145,8 @@ def svdpp_train(
                 for f in range(0, vector_limit, W):
                     implicit_work.store(
                         f,
-                        implicit_work.load[width=W](f)
-                        + y.load[width=W](f) / root_count,
+                        implicit_work.unsafe_load[width=W](f)
+                        + y.unsafe_load[width=W](f) / root_count,
                     )
                 for f in range(vector_limit, n_factors):
                     implicit_work[f] += yj[j * n_factors + f] / root_count
@@ -158,9 +157,9 @@ def svdpp_train(
             bu[u] += lr_bu * (err - reg_bu * bu[u])
             bi[i] += lr_bi * (err - reg_bi * bi[i])
             for f in range(0, vector_limit, W):
-                var pv = p.load[width=W](f)
-                var qv = q.load[width=W](f)
-                var implicit = implicit_work.load[width=W](f)
+                var pv = p.unsafe_load[width=W](f)
+                var qv = q.unsafe_load[width=W](f)
+                var implicit = implicit_work.unsafe_load[width=W](f)
                 p.store(f, pv + lr_pu * (err * qv - reg_pu * pv))
                 q.store(
                     f,
@@ -170,7 +169,7 @@ def svdpp_train(
                 for pos in range(first, last):
                     var j = Int(user_items[pos])
                     var y = yj + j * n_factors
-                    var yv = y.load[width=W](f)
+                    var yv = y.unsafe_load[width=W](f)
                     y.store(f, yv + lr_yj * (delta - reg_yj * yv))
             for f in range(vector_limit, n_factors):
                 var puf = p[f]
@@ -196,9 +195,10 @@ def similarities(
     kind: Int,
     global_mean: Float64,
     shrinkage: Float64,
-    allow_parallel: Bool,
+    x_start: Int,
+    x_stop: Int,
 ):
-    @parameter
+    @__parameter
     def compute_row(x1: Int):
         sim[x1 * n_x + x1] = 1.0
         for x2 in range(x1 + 1, n_x):
@@ -263,11 +263,8 @@ def similarities(
             sim[x1 * n_x + x2] = value
             sim[x2 * n_x + x1] = value
 
-    if allow_parallel and n_x >= 256:
-        parallelize[compute_row](n_x, 32)
-    else:
-        for x1 in range(n_x):
-            compute_row(x1)
+    for x1 in range(x_start, x_stop):
+        compute_row(x1)
 
 
 def baseline_als(
@@ -345,11 +342,12 @@ def knn_predict(
     min_k: Int,
     mode: Int,
     global_mean: Float64,
-    allow_parallel: Bool,
+    row_start: Int,
+    row_stop: Int,
 ):
     comptime W = simdwidthof[DType.float64]()
 
-    @parameter
+    @__parameter
     def compute_row(row: Int):
         var base = row * k
         var kept = 0
@@ -403,13 +401,13 @@ def knn_predict(
         var row_values = values_work + base
         var row_scores = scores_work + base
         if used >= W:
-            var score_vector = row_scores.load[width=W](0)
-            var weighted_vector = score_vector * row_values.load[width=W](0)
+            var score_vector = row_scores.unsafe_load[width=W](0)
+            var weighted_vector = score_vector * row_values.unsafe_load[width=W](0)
             var sum_vector = score_vector
             rank = W
             while rank + W <= used:
-                score_vector = row_scores.load[width=W](rank)
-                weighted_vector += score_vector * row_values.load[width=W](rank)
+                score_vector = row_scores.unsafe_load[width=W](rank)
+                weighted_vector += score_vector * row_values.unsafe_load[width=W](rank)
                 sum_vector += score_vector
                 rank += W
             weighted = weighted_vector.reduce_add()
@@ -436,11 +434,8 @@ def knn_predict(
             if used >= min_k and sum_sim != 0.0:
                 estimates[row] += weighted / sum_sim
 
-    if allow_parallel and m >= 2048:
-        parallelize[compute_row](m, 64)
-    else:
-        for row in range(m):
-            compute_row(row)
+    for row in range(row_start, row_stop):
+        compute_row(row)
 
 
 @export("msu_svd_train")
@@ -475,11 +470,11 @@ def msu_svdpp_train(
 def msu_similarities(
     offsets: Int, other_ids: Int, ratings: Int, sim: Int, x_bias: Int,
     y_bias: Int, n_x: Int, min_support: Int, kind: Int,
-    global_mean: Float64, shrinkage: Float64, allow_parallel: Int,
+    global_mean: Float64, shrinkage: Float64, x_start: Int, x_stop: Int,
 ) abi("C"):
     similarities(ip(offsets), ip(other_ids), fp(ratings), fp(sim), fp(x_bias),
                  fp(y_bias), n_x, min_support, kind, global_mean, shrinkage,
-                 allow_parallel != 0)
+                 x_start, x_stop)
 
 
 @export("msu_baseline_als")
@@ -509,10 +504,10 @@ def msu_knn_predict(
     xs: Int, ys: Int, offsets: Int, neighbors: Int, ratings: Int, sim: Int,
     stat1: Int, stat2: Int, y_bias: Int, estimates: Int, actual: Int,
     scores_work: Int, neighbors_work: Int, m: Int, n_x: Int, k: Int,
-    min_k: Int, mode: Int, allow_parallel: Int, global_mean: Float64,
+    min_k: Int, mode: Int, global_mean: Float64, row_start: Int, row_stop: Int,
 ) abi("C"):
     knn_predict(ip(xs), ip(ys), ip(offsets), ip(neighbors), fp(ratings),
                 fp(sim), fp(stat1), fp(stat2), fp(y_bias), fp(estimates),
                 ip(actual), fp(scores_work), ip(neighbors_work),
                 fp(neighbors_work), m, n_x, k,
-                min_k, mode, global_mean, allow_parallel != 0)
+                min_k, mode, global_mean, row_start, row_stop)

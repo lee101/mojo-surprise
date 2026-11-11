@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import ctypes
 import os
 import shutil
@@ -20,10 +19,10 @@ F = ctypes.c_double
 _SIGNATURES = {
     "msu_svd_train": ([I] * 10 + [F, I] + [F] * 8, None),
     "msu_svdpp_train": ([I] * 14 + [F] * 11, None),
-    "msu_similarities": ([I] * 9 + [F, F, I], None),
+    "msu_similarities": ([I] * 9 + [F, F] + [I, I], None),
     "msu_baseline_als": ([I] * 11 + [F, F, F], None),
     "msu_baseline_sgd": ([I] * 7 + [F, F, F], None),
-    "msu_knn_predict": ([I] * 19 + [F], None),
+    "msu_knn_predict": ([I] * 18 + [F, I, I], None),
 }
 
 
@@ -59,33 +58,11 @@ def build(force: bool = False) -> str:
 
 
 _loaded: ctypes.CDLL | None = None
-_cpu_device: int | None = None
-
-
-def _release_cpu_device() -> None:
-    global _cpu_device
-    if _loaded is not None and _cpu_device is not None:
-        release = _loaded.KGEN_CompilerRT_AsyncRT_ReleaseCPUDevice
-        release.argtypes = [ctypes.c_void_p]
-        release(_cpu_device)
-        _cpu_device = None
 
 
 def parallel_available() -> bool:
-    global _cpu_device
-    native = lib()
-    if _cpu_device is None:
-        try:
-            initialize = native.KGEN_CompilerRT_AsyncRT_GetOrCreateCPUDevice
-            initialize.argtypes = []
-            initialize.restype = ctypes.c_void_p
-            _cpu_device = initialize()
-        except (AttributeError, OSError):
-            return False
-    return _cpu_device is not None
-
-
-atexit.register(_release_cpu_device)
+    """True when row ranges can be fanned out over a thread pool."""
+    return (os.cpu_count() or 1) > 1
 
 
 def lib() -> ctypes.CDLL:

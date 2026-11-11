@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from ._lib import addr, f64, i64, lib, parallel_available
+
+_FANOUT_WORKERS = 8
+_SIMILARITY_FANOUT_MIN_ROWS = 256
+_PREDICT_FANOUT_MIN_ROWS = 2_048
+
+
+def _fan_out(count: int, minimum: int, run) -> None:
+    if count >= minimum and parallel_available():
+        parts = min(_FANOUT_WORKERS, count)
+        bounds = [
+            (count * part // parts, count * (part + 1) // parts)
+            for part in range(parts)
+        ]
+        with ThreadPoolExecutor(parts) as executor:
+            list(executor.map(run, bounds))
+    else:
+        run((0, count))
 
 
 def rating_arrays(trainset):
@@ -65,20 +84,25 @@ def compute_similarities(trainset, user_based, name, min_support, bx=None, by=No
         )
     if name == "pearson_baseline":
         min_support = max(2, min_support)
-    lib().msu_similarities(
-        addr(offsets, dtype=np.int64, min_size=n_x + 1),
-        addr(other_ids, dtype=np.int64, min_size=trainset.n_ratings),
-        addr(ratings, dtype=np.float64, min_size=trainset.n_ratings),
-        addr(matrix, dtype=np.float64, min_size=n_x * n_x, writable=True),
-        addr(bx, dtype=np.float64, min_size=n_x),
-        addr(by, dtype=np.float64, min_size=n_y),
-        n_x,
-        min_support,
-        kinds[name],
-        trainset.global_mean,
-        shrinkage,
-        int(n_x >= 256 and parallel_available()),
-    )
+    def run(bound):
+        start, stop = bound
+        lib().msu_similarities(
+            addr(offsets, dtype=np.int64, min_size=n_x + 1),
+            addr(other_ids, dtype=np.int64, min_size=trainset.n_ratings),
+            addr(ratings, dtype=np.float64, min_size=trainset.n_ratings),
+            addr(matrix, dtype=np.float64, min_size=n_x * n_x, writable=True),
+            addr(bx, dtype=np.float64, min_size=n_x),
+            addr(by, dtype=np.float64, min_size=n_y),
+            n_x,
+            min_support,
+            kinds[name],
+            trainset.global_mean,
+            shrinkage,
+            start,
+            stop,
+        )
+
+    _fan_out(n_x, _SIMILARITY_FANOUT_MIN_ROWS, run)
     return matrix
 
 
@@ -145,26 +169,49 @@ def knn_many(algo, xs: np.ndarray, ys: np.ndarray, mode: int):
     stat1 = algo._stat1
     stat2 = algo._stat2
     y_bias = algo._y_bias
-    lib().msu_knn_predict(
-        addr(xs, dtype=np.int64, min_size=count),
-        addr(ys, dtype=np.int64, min_size=count),
-        addr(algo._yr_offsets, dtype=np.int64, min_size=algo.n_y + 1),
-        addr(algo._yr_neighbors, dtype=np.int64, min_size=algo.trainset.n_ratings),
-        addr(algo._yr_ratings, dtype=np.float64, min_size=algo.trainset.n_ratings),
-        addr(algo.sim, dtype=np.float64, min_size=algo.n_x * algo.n_x),
-        addr(stat1, dtype=np.float64, min_size=algo.n_x),
-        addr(stat2, dtype=np.float64, min_size=algo.n_x),
-        addr(y_bias, dtype=np.float64, min_size=algo.n_y),
-        addr(estimates, dtype=np.float64, min_size=count, writable=True),
-        addr(actual, dtype=np.int64, min_size=count, writable=True),
-        addr(score_work, dtype=np.float64, min_size=count * algo.k, writable=True),
-        addr(neighbor_work, dtype=np.int64, min_size=count * algo.k, writable=True),
-        count,
-        algo.n_x,
-        algo.k,
-        algo.min_k,
-        mode,
-        int(count >= 2048 and parallel_available()),
-        algo.trainset.global_mean,
-    )
+    def run(bound):
+        start, stop = bound
+        lib().msu_knn_predict(
+            addr(xs, dtype=np.int64, min_size=count),
+            addr(ys, dtype=np.int64, min_size=count),
+            addr(algo._yr_offsets, dtype=np.int64, min_size=algo.n_y + 1),
+            addr(
+                algo._yr_neighbors,
+                dtype=np.int64,
+                min_size=algo.trainset.n_ratings,
+            ),
+            addr(
+                algo._yr_ratings,
+                dtype=np.float64,
+                min_size=algo.trainset.n_ratings,
+            ),
+            addr(algo.sim, dtype=np.float64, min_size=algo.n_x * algo.n_x),
+            addr(stat1, dtype=np.float64, min_size=algo.n_x),
+            addr(stat2, dtype=np.float64, min_size=algo.n_x),
+            addr(y_bias, dtype=np.float64, min_size=algo.n_y),
+            addr(estimates, dtype=np.float64, min_size=count, writable=True),
+            addr(actual, dtype=np.int64, min_size=count, writable=True),
+            addr(
+                score_work,
+                dtype=np.float64,
+                min_size=count * algo.k,
+                writable=True,
+            ),
+            addr(
+                neighbor_work,
+                dtype=np.int64,
+                min_size=count * algo.k,
+                writable=True,
+            ),
+            count,
+            algo.n_x,
+            algo.k,
+            algo.min_k,
+            mode,
+            algo.trainset.global_mean,
+            start,
+            stop,
+        )
+
+    _fan_out(count, _PREDICT_FANOUT_MIN_ROWS, run)
     return estimates, actual
